@@ -8,15 +8,21 @@
 
 # Build Root Config URI
 : ${BR_ROOT_URI:="https://raw.githubusercontent.com/NextThingCo/CHIP-buildroot/chip/stable"}
+: ${BR_CONFIG:="chip_defconfig"}
 
+# Chroot
 MOUNTS=("/dev" "/dev/pts" "/proc" "/sys")
 
+# Root Settings
+: ${HOSTNAME:="ntc-chip"}
+: ${PASSWORD:="changeme"}
+
+# APT
 PACKAGES=(
-	"locales" "bash" "bash-completion" "bash-builtins" "bash-doc"
+	"sudo" "locales" "bash" "bash-completion" "bash-builtins" "bash-doc"
 	"man-db" "build-essential" "kernel-package" "sunxi-tools" "u-boot-tools"
 	"git"
 )
-
 # Cuts the value of the environment variable
 function envValue() {
 	grep -Ei "($(strJoin "|" $@))" | cut -d= -f2- <&0
@@ -81,8 +87,16 @@ function chroot_dest() {
 	for m in $MOUNTS; do sudo umount "${ROOT}${m}"; done
 }
 
+function getRootPrep() {
+	cat <<-END_SCRIPT
+	echo "${HOSTNAME}" > /etc/hostname
+	sed -i 's/localhost/${HOSTNAME} localhost/g' /etc/hosts
+	chpasswd <<<"root:${PASSWORD}"
+	END_SCRIPT
+}
+
 function getBRConfig() {
-	readCacheDoc "brconfig" "curl -#L \"${BR_CONFIG_URI}\"" \
+	readCacheDoc "brconfig" "curl -#L ${BR_ROOT_URI}/configs/${BR_CONFIG}" \
 		| grep -Ei "($(strJoin "|" $@))"
 }
 
@@ -90,11 +104,15 @@ function getBRKernel() {
 	local repoURL="$(getBRConfig BR2_LINUX_KERNEL | envValue REPO_URL)"
 	local repoBrn="$(getBRConfig BR2_LINUX_KERNEL | envValue REPO_VERSION)"
 	local kernCnf="$(getBRConfig BR2_LINUX_KERNEL | envValue CUSTOM_CONFIG_FILE)"
+	local kernDts="$(getBRConfig BR2_LINUX_KERNEL | envValue INTREE_DTS_NAME)"
 
 	cat <<-END_SCRIPT
+	export DTS_SUPPORT=y
+	export INTREE_DTS_NAME="${kernDts}"
 	git clone ${repoURL} -b ${repoBrn} --depth 1 /root/linux
 	curl -#L ${BR_ROOT_URI}/${kernCnf} > /root/linux/.config
 	cd /root/linux && make olddefconfig && make deb-pkg && cd -
+ 	cd /root && dpkg -i \$(ls *deb | grep -v dbg) && cd -
 	END_SCRIPT
 }
 
@@ -159,6 +177,7 @@ chroot_prep
 # Execute the ChRoot
 sudo -E chroot "${ROOT}" <<-END_SCRIPT
 #!/bin/bash -xil
+$(getRootPrep)
 $(getBRKernel)
 END_SCRIPT
 # Destroy the ChRoot
