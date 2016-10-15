@@ -26,9 +26,15 @@ PACKAGES=(
 	"nano" "vim" "wget" "curl" "ca-certificates" "git" "git-buildpackage" "sed" "grep"
 )
 
+# Kernel
+: ${KERNEL_PATH:="/root/linux"}
+: ${KERNEL_MAKE:="make-kpkg --append-to-version chip-debian && debian/rules binary"}
+: ${KERNEL_DIST:=0}
+
 # Cuts the value of the environment variable
 function envValue() {
-	grep -Ei "($(strJoin "|" $@))" | cut -d= -f2- <&0
+	grep -Ei "($(strJoin "|" $@))" <&0 | cut -d= -f2- \
+		| sed -e 's/^"//' -e 's/"$//'
 }
 
 
@@ -92,6 +98,7 @@ function chroot_dest() {
 
 function getRootPrep() {
 	cat <<-END_SCRIPT
+	locale-gen
 	echo "${HOSTNAME}" > /etc/hostname
 	sed -i 's/localhost/${HOSTNAME} localhost/g' /etc/hosts
 	chpasswd <<<"root:${PASSWORD}"
@@ -129,6 +136,27 @@ function getChrootEnv() {
 	END_SCRIPT
 }
 
+function runChroot() {
+	${ROOTCMD} chroot ${ROOT} <<-END_SCRIPT
+	#!/bin/bash -xil
+	$(getChrootEnv)
+	$(cat <&0)
+	END_SCRIPT
+}
+
+function runStage() {
+	local stage="stage$1"; shift;
+	if [ ! -f "${ROOT}/${stage}" ]; then
+		runChroot <&0
+		touch "${ROOT}/${stage}"
+	fi
+}
+
+function clearStage() {
+	local stage="stage$1"; shift;
+	rm -vf "${ROOT}/${stage}"
+}
+
 function getBRKernel() {
 	local repoURL="$(getBRConfig LINUX_KERNEL | envValue REPO_URL)"
 	local repoRef="$(getBRConfig LINUX_KERNEL | envValue REPO_VERSION)"
@@ -138,11 +166,44 @@ function getBRKernel() {
 	cat <<-END_SCRIPT
 	export DTS_SUPPORT=y
 	export INTREE_DTS_NAME="${kernDts}"
-	mkdir -p /root/linux
-	git clone ${repoURL} -b ${repoRef} --depth 1 /root/linux
-	curl -#L "${BR_ROOT_URI}/${kernCnf}" > /root/linux/.config
-	cd /root/linux && make olddefconfig && make deb-pkg && cd -
- 	cd /root && dpkg -i \$(ls *deb | grep -v dbg) && cd -
+	END_SCRIPT
+
+	# Clone the repository into a local mirror
+	[ ! -d "${ROOT}/${KERNEL_PATH}.git" ] && cat <<-END_SCRIPT
+	git clone  ${repoURL} -v -j2 -b ${repoRef} --depth 1 --mirror "${KERNEL_PATH}.git"
+	END_SCRIPT
+
+	# This looks a little awkward, I will clean this up later
+	# I want to keep it under 80 chars.
+	([ -d "${ROOT}/${KERNEL_PATH}" ] \
+	&& [ ! -d "${ROOT}/${KERNEL_PATH}/.git" ] \
+	|| [ ${KERNEL_DIST} -eq 1 ]) && cat <<-END_SCRIPT
+	rm -Rvf "${KERNEL_PATH}"
+	END_SCRIPT
+
+	# A layer of repo caching would be helpful.
+	# My initial thoughts were using a --mirror checkout
+	# or a separate git directory; multiple work dirs.
+	cat <<-END_SCRIPT
+	[ -d "${KERNEL_PATH}.git" ] && [ ! -d "${KERNEL_PATH}" ] \
+	&& git clone "${KERNEL_PATH}.git" -v -b ${repoRef} "${KERNEL_PATH}"
+	END_SCRIPT
+
+	cat <<-END_SCRIPT
+	if [ -d "${KERNEL_PATH}" ] && [ ${KERNEL_DIST} -eq 1 ]; then
+		cd "${KERNEL_PATH}"
+		curl -#L "${BR_ROOT_URI}/${kernCnf}" > ./.config
+		${KERNEL_MAKE}
+	else
+		echo "Skipping Kernel Build" 1>&2
+		[ -d /root ] && ls -lA /root 1>&2
+		[ -d /root/linux ] && ls -lA /root/linux 1>&2
+	fi
+	END_SCRIPT
+
+	cat <<-END_SCRIPT
+	cd /root
+	dpkg -i \$(ls *deb | grep -v dbg)
 	END_SCRIPT
 }
 
@@ -217,14 +278,19 @@ fi
 
 # Setup the ChRoot
 chroot_prep
-# Execute the ChRoot
-${ROOTCMD} chroot "${ROOT}" <<-END_SCRIPT
-#!/bin/bash -xil 
-$(getChrootEnv)
+
+runStage 1 <<-END_SCRIPT
 $(getRootPrep)
+END_SCRIPT
+
+runStage 2 <<-END_SCRIPT
 $(getAptUpgrade)
+END_SCRIPT
+
+runStage 3 <<-END_SCRIPT
 $(getBRKernel)
 END_SCRIPT
+
 # Destroy the ChRoot
 chroot_dest
 
