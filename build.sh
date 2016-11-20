@@ -148,13 +148,13 @@ function runStage() {
 	local stage="stage$1"; shift;
 	if [ ! -f "${ROOT}/${stage}" ]; then
 		runChroot <&0
-		touch "${ROOT}/${stage}"
+		${ROOTCMD} touch "${ROOT}/${stage}"
 	fi
 }
 
 function clearStage() {
 	local stage="stage$1"; shift;
-	rm -vf "${ROOT}/${stage}"
+	${ROOTCMD} rm -vf "${ROOT}/${stage}"
 }
 
 function getBRKernel() {
