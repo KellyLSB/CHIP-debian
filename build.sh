@@ -86,6 +86,7 @@ function debian_arch() {
 
 function chroot_prep() {
 	for m in $MOUNTS; do sudo mount -obind "${m}" "${ROOT}${m}"; done
+	${ROOTCMD} mkdir -p "${ROOT}$(basename $(getQEMUStatic))"
 	${ROOTCMD} cp -f "$(getQEMUStatic)" "${ROOT}$(getQEMUStatic)"
 	${ROOTCMD} cp -f "$(getQEMUStatic)" "${ROOT}/bin/$(basename $(getQEMUStatic))"
 }
@@ -224,17 +225,16 @@ function getBRUBoot() {
 	END_SCRIPT
 }
 
-function debootstrap() {
-	local _tarball="" _tarballDown=0 _foreign="" _foreignSet=0 _ret=0
-
-	# If we need to download a tarball
-	if [ ! -f "${TARBALL}" ] || [ ${UPDATE_TGZ} -eq 1 ]; then
-		_tarball="--download-only --make-tarball=${TARBALL}"
-		_tarballDown=1
-		UPDATE_TGZ=0
+function debootstrapTarball() {
+	if [ "$1" != "unpack" ]; then
+		echo -n --download-only --make-tarball=\"${TARBALL}\"
 	else
-		_tarball="--unpack-tarball=${TARBALL}"
+		echo -n --unpack-tarball=\"${TARBALL}\"
 	fi
+}
+
+function debootstrap() {
+	local _foreign="" _foreignSet=0 _ret=0
 
 	# Setup the cross compiling environment
 	if [ "${DEB_HOST_ARCH}" != "${DEB_TARGET_ARCH}" ]; then
@@ -246,34 +246,35 @@ function debootstrap() {
 	# May be a security hole, fakeroot may be better for such
 	# a script as it will avoid higher priveleges.
 	# => Not sure is command prefix will be required as of yet!
-	${ROOTCMD} debootstrap ${_tarball} ${_foreign} \
-		--include="$(packagesCSV)" $@       \
-		"${DIST}" "${ROOT}" "${MIRROR}"; _ret=$?
+	if [ ! -f "${TARBALL}" ] || [ ${UPDATE_TGZ} -eq 1 ]; then
+		${ROOTCMD} debootstrap ${_foreign} --include="$(packagesCSV)" \
+			$(debootstrapTarball) $@ "${DIST}" "${ROOT}" "${MIRROR}"
+	fi
+
+	if [ -f "${TARBALL}" ]; then
+		${ROOTCMD} debootstrap ${_foreign} --include="$(packagesCSV)" \
+			$(debootstrapTarball unpack) $@ "${DIST}" "${ROOT}" "${MIRROR}"
+	else
+		${ROOTCMD} debootstrap ${_foreign} \
+			--include="$(packagesCSV)" $@ \
+			"${DIST}" "${ROOT}" "${MIRROR}"
+	fi
 
 	# Handle the second stage part
-	if [ ${_foreignSet} -eq 1 ] && [ ${_tarballDown} -eq 0 ]; then
+	if [ ${_foreignSet} -eq 1 ]; then
 			chroot_prep
 			${ROOTCMD} chroot "${ROOT}" /debootstrap/debootstrap --second-stage
 			chroot_dest
 	fi
-
-	# If we made a tarball then return 2 that way we may
-	# allow the script to choose the next path.
-	# => @TODO: Does this status code conflict with debootstrap(8)
-	[ ${_tarballDown} -eq 1 ] && return 2 || return ${_ret}
 }
 
 # Set the Deb Target Architectures
 # => Very Useful for Mapping Architecture Presentations
 debian_arch
 
-if [ ! -d ${ROOT} ] || [ ${UPDATE_TGZ} -eq 1 ]; then
+if [ ! -d ${ROOT}/bin ] || [ ${UPDATE_TGZ} -eq 1 ]; then
 	# Bootstrap the root.
 	debootstrap
-	# If we got code 2 back then
-	# unpack the tar archive.
-	# Should do the second stage in this part
-	[ $? -eq 2 ] && debootstrap
 fi
 
 # Setup the ChRoot
