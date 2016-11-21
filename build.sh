@@ -84,16 +84,16 @@ function debian_arch() {
 	for e in $(dpkg-architecture -A ${ARCH}); do eval "export ${e}"; done
 }
 
+
 function chroot_prep() {
 	for m in $MOUNTS; do sudo mount -obind "${m}" "${ROOT}${m}"; done
-	${ROOTCMD} mkdir -p "${ROOT}$(basename $(getQEMUStatic))"
-	${ROOTCMD} cp -f "$(getQEMUStatic)" "${ROOT}$(getQEMUStatic)"
+	${ROOTCMD} cp -f "$(getQEMUStatic)" "${ROOT}/$(getQEMUStatic)"
 	${ROOTCMD} cp -f "$(getQEMUStatic)" "${ROOT}/bin/$(basename $(getQEMUStatic))"
 }
 
 function chroot_dest() {
 	${ROOTCMD} rm -f "${ROOT}/bin/$(basename $(getQEMUStatic))"
-	${ROOTCMD} rm -f "${ROOT}$(getQEMUStatic)"
+	${ROOTCMD} rm -f "${ROOT}/$(getQEMUStatic)"
 	for m in $MOUNTS; do sudo umount "${ROOT}${m}"; done
 }
 
@@ -130,16 +130,19 @@ function getAptUpgrade() {
 function getChrootEnv() {
 	cat <<-END_SCRIPT
 	export DEBIAN_FRONTEND=noninteractive
+
 	export LANGUAGE=en_US.UTF-8
 	export LANG=\${LANGUAGE}
 	export LC_ALL=\${LANGUAGE}
 	locale-gen
+
+	export ARCH=armhf
 	END_SCRIPT
 }
 
 function runChroot() {
 	${ROOTCMD} chroot ${ROOT} <<-END_SCRIPT
-	#!/bin/bash -xil
+	#!/usr/bin/env -i bash -xil
 	$(getChrootEnv)
 	$(cat <&0)
 	END_SCRIPT
@@ -167,45 +170,45 @@ function getBRKernel() {
 	cat <<-END_SCRIPT
 	export DTS_SUPPORT=y
 	export INTREE_DTS_NAME="${kernDts}"
-	END_SCRIPT
 
 	# Clone the repository into a local mirror
-	[ ! -d "${ROOT}/${KERNEL_PATH}.git" ] && cat <<-END_SCRIPT
-	git clone  ${repoURL} -v -j2 -b ${repoRef} --depth 1 --mirror "${KERNEL_PATH}.git"
-	END_SCRIPT
+	if [ ! -d "${KERNEL_PATH}.git" ]; then
+		git clone "${repoURL}" -v -j2 -b "${repoRef}" --depth 1 --mirror "${KERNEL_PATH}.git"
+	else
+		git --git-dir="${KERNEL_PATH}.git" fetch --depth 1 --tags --all
+	fi
 
-	# This looks a little awkward, I will clean this up later
-	# I want to keep it under 80 chars.
-	([ -d "${ROOT}/${KERNEL_PATH}" ] \
-	&& [ ! -d "${ROOT}/${KERNEL_PATH}/.git" ] \
-	|| [ ${KERNEL_DIST} -eq 1 ]) && cat <<-END_SCRIPT
-	rm -Rvf "${KERNEL_PATH}"
-	END_SCRIPT
+	# Dist kernel; (aka clean workdir).
+	if [ -d "${KERNEL_PATH}" ] && [ ! -d "${KERNEL_PATH}/.git" ]; then
+		KERNEL_DIST=1
+	fi
 
-	# A layer of repo caching would be helpful.
-	# My initial thoughts were using a --mirror checkout
-	# or a separate git directory; multiple work dirs.
-	cat <<-END_SCRIPT
-	[ -d "${KERNEL_PATH}.git" ] && [ ! -d "${KERNEL_PATH}" ] \
-	&& git clone "${KERNEL_PATH}.git" -v -b ${repoRef} "${KERNEL_PATH}"
-	END_SCRIPT
+	if [ ${KERNEL_DIST} -eq 1 ]; then
+		rm -Rvf "${KERNEL_PATH}"
+	fi
 
-	cat <<-END_SCRIPT
-	if [ -d "${KERNEL_PATH}" ] && [ ${KERNEL_DIST} -eq 1 ]; then
+	# Checkout git repo and build kernel
+	if [ -d "${KERNEL_PATH}.git" ] && [ ! -d "${KERNEL_PATH}" ]; then
+		git clone "file://${KERNEL_PATH}.git" -v -b "${repoRef}" --depth 1 "${KERNEL_PATH}"
+		curl -#L "${BR_ROOT_URI}/${kernCnf}" > "${KERNEL_PATH}/.config"
+	fi
+
+	if [ -d "${KERNEL_PATH}" ]; then
 		cd "${KERNEL_PATH}"
-		curl -#L "${BR_ROOT_URI}/${kernCnf}" > ./.config
-		${KERNEL_MAKE}
+		env > /makeEnv.dump && rm /make.log
+		(${KERNEL_MAKE}) 2>&1 | tee /make.log
+		cd -
 	else
 		echo "Skipping Kernel Build" 1>&2
-		[ -d /root ] && ls -lA /root 1>&2
-		[ -d /root/linux ] && ls -lA /root/linux 1>&2
 	fi
+
+	ls $(dirname ${KERNEL_PATH})/*deb
 	END_SCRIPT
 
-	cat <<-END_SCRIPT
-	cd /root
-	dpkg -i \$(ls *deb | grep -v dbg)
-	END_SCRIPT
+	#cat <<-END_SCRIPT
+	#cd /root
+	#dpkg -i \$(ls *deb | grep -v dbg)
+	#END_SCRIPT
 }
 
 function getBRUBoot() {
