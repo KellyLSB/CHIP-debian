@@ -28,7 +28,7 @@ PACKAGES=(
 
 # Kernel
 : ${KERNEL_PATH:="/root/linux"}
-: ${KERNEL_MAKE:="make-kpkg --append-to-version chip-debian && debian/rules binary"}
+: ${KERNEL_MAKE:="make-kpkg --append-to-version chip-debian --initrd --jobs 2 binary-arch kernel_source libc-kheaders"}
 : ${KERNEL_DIST:=0}
 
 # Cuts the value of the environment variable
@@ -87,13 +87,11 @@ function debian_arch() {
 
 function chroot_prep() {
 	for m in $MOUNTS; do sudo mount -obind "${m}" "${ROOT}${m}"; done
-	${ROOTCMD} cp -f "$(getQEMUStatic)" "${ROOT}/$(getQEMUStatic)"
-	${ROOTCMD} cp -f "$(getQEMUStatic)" "${ROOT}/bin/$(basename $(getQEMUStatic))"
+	${ROOTCMD} cp -vf "$(getQEMUStatic)" "${ROOT}/$(getQEMUStatic)"
 }
 
 function chroot_dest() {
-	${ROOTCMD} rm -f "${ROOT}/bin/$(basename $(getQEMUStatic))"
-	${ROOTCMD} rm -f "${ROOT}/$(getQEMUStatic)"
+	${ROOTCMD} rm -vf "${ROOT}/bin/$(basename $(getQEMUStatic))"
 	for m in $MOUNTS; do sudo umount "${ROOT}${m}"; done
 }
 
@@ -130,19 +128,21 @@ function getAptUpgrade() {
 function getChrootEnv() {
 	cat <<-END_SCRIPT
 	export DEBIAN_FRONTEND=noninteractive
-
 	export LANGUAGE=en_US.UTF-8
 	export LANG=\${LANGUAGE}
 	export LC_ALL=\${LANGUAGE}
-	locale-gen
+	export ARCH=arm
 
-	export ARCH=armhf
+	sed -ri "s/^# (\${LANGUAGE})/\1/" /etc/locale.gen && locale-gen
+
+	for e in \$(dpkg-architecture -a \${ARCH} -A \${ARCH}); do
+		eval "export \${e}"
+	done
 	END_SCRIPT
 }
 
 function runChroot() {
-	${ROOTCMD} chroot ${ROOT} <<-END_SCRIPT
-	#!/usr/bin/env -i bash -xil
+	${ROOTCMD} chroot ${ROOT} /usr/bin/env -i bash -xil <<-END_SCRIPT
 	$(getChrootEnv)
 	$(cat <&0)
 	END_SCRIPT
@@ -196,7 +196,7 @@ function getBRKernel() {
 	if [ -d "${KERNEL_PATH}" ]; then
 		cd "${KERNEL_PATH}"
 		env > /makeEnv.dump && rm /make.log
-		(${KERNEL_MAKE}) 2>&1 | tee /make.log
+		bash -c "${KERNEL_MAKE}" 2>&1 | tee /make.log
 		cd -
 	else
 		echo "Skipping Kernel Build" 1>&2
