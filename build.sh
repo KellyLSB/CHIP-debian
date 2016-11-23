@@ -28,7 +28,8 @@ PACKAGES=(
 
 # Kernel
 : ${KERNEL_PATH:="/root/linux"}
-: ${KERNEL_MAKE:="make-kpkg --append-to-version chip-debian --initrd --jobs 2 binary-arch kernel_source libc-kheaders"}
+: ${KERNEL_COMPILER:="arm-linux-gnueabihf-"}
+: ${KERNEL_MAKE:="make-kpkg --append-to-version=chip-debian --arch=${ARCH} --cross-compile=${KERNEL_COMPILER} --jobs=2 --initrd binary-arch kernel_source libc-kheaders"}
 : ${KERNEL_DIST:=0}
 
 # Cuts the value of the environment variable
@@ -131,18 +132,17 @@ function getChrootEnv() {
 	export LANGUAGE=en_US.UTF-8
 	export LANG=\${LANGUAGE}
 	export LC_ALL=\${LANGUAGE}
-	export ARCH=arm
 
 	sed -ri "s/^# (\${LANGUAGE})/\1/" /etc/locale.gen && locale-gen
 
-	for e in \$(dpkg-architecture -a \${ARCH} -A \${ARCH}); do
+	for e in \$(dpkg-architecture -a ${ARCH} -A ${ARCH}); do
 		eval "export \${e}"
 	done
 	END_SCRIPT
 }
 
 function runChroot() {
-	${ROOTCMD} chroot ${ROOT} /usr/bin/env -i bash -xil <<-END_SCRIPT
+	${ROOTCMD} chroot ${ROOT} /usr/bin/env -i bash -il <<-END_SCRIPT
 	$(getChrootEnv)
 	$(cat <&0)
 	END_SCRIPT
@@ -167,6 +167,8 @@ function getBRKernel() {
 	local kernCnf="$(getBRConfig LINUX_KERNEL | envValue CUSTOM_CONFIG_FILE)"
 	local kernDts="$(getBRConfig LINUX_KERNEL | envValue INTREE_DTS_NAME)"
 
+	local kernDeb="ls $(dirname ${KERNEL_PATH})/*deb"
+
 	cat <<-END_SCRIPT
 	export DTS_SUPPORT=y
 	export INTREE_DTS_NAME="${kernDts}"
@@ -185,6 +187,7 @@ function getBRKernel() {
 
 	if [ ${KERNEL_DIST} -eq 1 ]; then
 		rm -Rvf "${KERNEL_PATH}"
+		rm -v \$(${kernDeb})
 	fi
 
 	# Checkout git repo and build kernel
@@ -193,7 +196,7 @@ function getBRKernel() {
 		curl -#L "${BR_ROOT_URI}/${kernCnf}" > "${KERNEL_PATH}/.config"
 	fi
 
-	if [ -d "${KERNEL_PATH}" ]; then
+	if [ -d "${KERNEL_PATH}" ] && ! (${kernDeb} | grep -v dbg) &>/dev/null; then
 		cd "${KERNEL_PATH}"
 		env > /makeEnv.dump && rm /make.log
 		bash -c "${KERNEL_MAKE}" 2>&1 | tee /make.log
@@ -202,7 +205,7 @@ function getBRKernel() {
 		echo "Skipping Kernel Build" 1>&2
 	fi
 
-	ls $(dirname ${KERNEL_PATH})/*deb
+	dpkg -i \$(${kernDeb} | grep -v dbg)
 	END_SCRIPT
 
 	#cat <<-END_SCRIPT
